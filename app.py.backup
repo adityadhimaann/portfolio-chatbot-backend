@@ -1,0 +1,135 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from app.utils.enhanced_chatbot_engine import EnhancedChatbotEngine
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app, origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3004"])  # Enable CORS for React frontends
+
+# Initialize enhanced chatbot
+chatbot = EnhancedChatbotEngine()
+
+# Chat history storage (in production, use a database)
+chat_sessions = {}
+
+@app.route('/')
+def home():
+    return jsonify({
+        "message": "AdiDev Chatbot API is running!",
+        "status": "active"
+    })
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    try:
+        data = request.get_json()
+        user_message = data.get('message', '')
+        session_id = data.get('session_id', 'default')
+        
+        if not user_message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        # Get or create chat history for session
+        if session_id not in chat_sessions:
+            chat_sessions[session_id] = []
+        
+        chat_history = chat_sessions[session_id]
+        
+        # Generate response
+        response = chatbot.generate_response(user_message, chat_history)
+        
+        # Update chat history
+        chat_history.append({"role": "user", "content": user_message})
+        chat_history.append({"role": "assistant", "content": response})
+        
+        # Keep only last 20 messages to manage memory
+        if len(chat_history) > 20:
+            chat_history = chat_history[-20:]
+        
+        chat_sessions[session_id] = chat_history
+        
+        return jsonify({
+            "response": response,
+            "session_id": session_id
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/initialize', methods=['POST'])
+def initialize_chatbot():
+    try:
+        data = request.get_json()
+        pdf_directory = data.get('pdf_directory', '/Users/aditya/Chatbot/data')
+        vector_store_path = data.get('vector_store_path', '/Users/aditya/Chatbot/data/vector_store.pkl')
+        
+        # Check if vector store exists
+        if os.path.exists(vector_store_path):
+            chatbot.load_existing_knowledge(vector_store_path)
+        else:
+            # Initialize from PDFs
+            chatbot.initialize_from_pdfs(pdf_directory, vector_store_path)
+        
+        return jsonify({
+            "message": "Chatbot initialized successfully",
+            "status": "ready"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/upload', methods=['POST'])
+def upload_pdf():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+        
+        if file and file.filename.endswith('.pdf'):
+            # Save uploaded file
+            filename = file.filename
+            file_path = os.path.join('/Users/aditya/Chatbot/data', filename)
+            file.save(file_path)
+            
+            return jsonify({
+                "message": f"File {filename} uploaded successfully",
+                "filename": filename
+            })
+        else:
+            return jsonify({"error": "Only PDF files are allowed"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "service": "AdiDev Chatbot API"
+    })
+
+if __name__ == '__main__':
+    # Auto-initialize if PDFs exist
+    pdf_directory = '/Users/aditya/Chatbot/data'
+    vector_store_path = '/Users/aditya/Chatbot/data/vector_store.pkl'
+    
+    try:
+        if os.path.exists(vector_store_path):
+            chatbot.load_existing_knowledge(vector_store_path)
+            print("Loaded existing knowledge base")
+        elif os.path.exists(pdf_directory) and os.listdir(pdf_directory):
+            chatbot.initialize_from_pdfs(pdf_directory, vector_store_path)
+            print("Initialized chatbot with PDFs")
+        else:
+            print("No PDFs found. Upload PDFs to /data directory and call /api/initialize")
+    except Exception as e:
+        print(f"Warning: Could not auto-initialize chatbot: {e}")
+    
+    app.run(debug=True, host='0.0.0.0', port=5001)
